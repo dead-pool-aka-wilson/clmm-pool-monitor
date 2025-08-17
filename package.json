@@ -1,0 +1,22 @@
+{
+  "name": "byreal-liquidity-fetcher",
+  "version": "1.0.0",
+  "description": "Byreal CLMM liquidity pool information fetcher using @solana/kit",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@solana/kit": "^2.3.0",
+    "@solana/spl-token": "^0.4.9",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/bn.js": "^5.2.0",
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
