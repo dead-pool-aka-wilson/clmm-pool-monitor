@@ -30,6 +30,51 @@ export interface LiquidityBreakpoint {
   isAccessible: boolean;
 }
 
+function stringToBN9Decimals(value: string): BN {
+  try {
+    // Remove commas if present
+    const cleanValue = value.replace(/,/g, "");
+
+    // Check if the string is a valid number
+    if (
+      !/^-?\d*\.?\d*$/.test(cleanValue) ||
+      cleanValue === "" ||
+      cleanValue === "."
+    ) {
+      throw new Error(`Invalid number format: ${value}`);
+    }
+
+    // Split by decimal point
+    const parts = cleanValue.split(".");
+
+    // Handle the integer part
+    const integerPart = parts[0] || "0";
+
+    // Handle the decimal part (if exists)
+    let decimalPart = parts[1] || "";
+
+    // Process decimal part to exactly 9 digits
+    if (decimalPart.length > 9) {
+      // Truncate to 9 decimals (no rounding)
+      decimalPart = decimalPart.substring(0, 9);
+    } else if (decimalPart.length < 9) {
+      // Pad with zeros to make it 9 decimals
+      decimalPart = decimalPart.padEnd(9, "0");
+    }
+
+    // Combine integer and decimal parts
+    const finalNumber = integerPart + decimalPart;
+
+    // Remove leading zeros (but keep at least one digit)
+    const trimmedNumber = finalNumber.replace(/^0+/, "") || "0";
+
+    // Create and return BN
+    return new BN(trimmedNumber);
+  } catch (error) {
+    throw new Error(`Failed to convert "${value}" to BN: ${error}`);
+  }
+}
+
 /**
  * Build tick liquidity map from positions
  */
@@ -296,27 +341,58 @@ function calculateSwapWithFees(
 /**
  * Calculate price impact - the actual price movement caused by the swap
  */
+
 function calculatePriceImpact(
-  startPrice: string,
-  endPrice: string,
-  isToken0ToToken1: boolean
+  startSqrtPrice: BN,
+  endSqrtPrice: BN,
+  isIncreasing: boolean
 ): number {
-  const start = parseFloat(startPrice);
-  const end = parseFloat(endPrice);
+  try {
+    // Validate inputs
+    if (startSqrtPrice.isZero() || endSqrtPrice.isZero()) {
+      return 0;
+    }
 
-  if (start === 0) return 0;
+    // Scale down by 2^32 before squaring to prevent overflow
+    const SCALE = new BN(2).pow(new BN(32));
 
-  // For token0 to token1 (selling SOL for FRAGME):
-  // - Price decreases (less FRAGME per SOL after swap)
-  // - Impact should be negative
-  // For token1 to token0 (selling FRAGME for SOL):
-  // - Price increases (more FRAGME per SOL after swap)
-  // - Impact should be positive
+    // Get sqrt prices scaled down to X32
+    const startSqrtX32 = startSqrtPrice.div(SCALE);
+    const endSqrtX32 = endSqrtPrice.div(SCALE);
 
-  const priceChange = ((end - start) / start) * 100;
+    // Square to get prices (now in X64 format)
+    const startPriceX64 = startSqrtX32.mul(startSqrtX32);
+    const endPriceX64 = endSqrtX32.mul(endSqrtX32);
 
-  // Return the actual price change percentage
-  return priceChange;
+    // Check for zero prices
+    if (startPriceX64.isZero()) return 0;
+
+    // Calculate price change in basis points (10000 = 100%)
+    const BASIS_POINTS = new BN(10000);
+    let priceImpactBasisPoints: BN;
+
+    // Calculate absolute price difference
+    const priceDiff = startPriceX64.gt(endPriceX64)
+      ? startPriceX64.sub(endPriceX64)
+      : endPriceX64.sub(startPriceX64);
+
+    // Calculate impact as percentage
+    priceImpactBasisPoints = priceDiff.mul(BASIS_POINTS).div(startPriceX64);
+
+    // Cap at 9999 basis points (99.99%)
+    const MAX_BASIS_POINTS = new BN(9999);
+    if (priceImpactBasisPoints.gt(MAX_BASIS_POINTS)) {
+      priceImpactBasisPoints = MAX_BASIS_POINTS;
+    }
+
+    // Convert basis points to percentage
+    const percentage = priceImpactBasisPoints.toNumber() / 100;
+
+    return percentage;
+  } catch (error) {
+    console.error(`Error calculating price impact:`, error);
+    return 0;
+  }
 }
 
 /**
@@ -449,8 +525,8 @@ export function findLiquidityBreakpoints(
 
       // Calculate price impact (change in price from start to end)
       const priceImpact = calculatePriceImpact(
-        initialPrice,
-        priceAtTick,
+        stringToBN9Decimals(initialPrice),
+        stringToBN9Decimals(priceAtTick),
         isToken0ToToken1
       );
 
