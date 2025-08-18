@@ -10,9 +10,11 @@ import {
   generateReportFilename
 } from "./generateMarkdownReport";
 import {
-  simulateSwapExactAmount,
-  displaySwapSimulation
+  findLiquidityBreakpoints,
+  generateLiquidityBreakpointReport,
+  simulateExactSwap
 } from "./swapSimulator";
+import { addDecimalPoint } from "./bnUtils";
 import BN from "bn.js";
 
 dotenv.config();
@@ -29,11 +31,116 @@ const CONFIG = {
   positionBatchSize: 10,
   maxPositions: 1000,
   showDetailedOutput: true,
-  fetchPositionOwners: true, // New option
-  generateReport: true, // Generate markdown report
-  reportOutputDir: "./reports", // Directory for reports
-  publishToNotion: true // Publish report to Notion
+  fetchPositionOwners: true,
+  generateReport: true,
+  reportOutputDir: "./reports",
+  publishToNotion: true
 };
+
+/**
+ * Display liquidity breakpoint summary in console
+ */
+function displayLiquidityBreakpointSummary(pool: any, positions: any[]): void {
+  console.log("\n💱 Liquidity Breakpoint Analysis...");
+
+  const decimals0 = pool.poolState.mintDecimals0;
+  const decimals1 = pool.poolState.mintDecimals1;
+
+  // Analyze both directions
+  const sol2fragme = findLiquidityBreakpoints(
+    pool,
+    positions,
+    "token0ToToken1",
+    5 // Just show top 5 in console
+  );
+
+  const fragme2sol = findLiquidityBreakpoints(
+    pool,
+    positions,
+    "token1ToToken0",
+    5
+  );
+
+  console.log("\n📊 SOL → FRAGME Key Breakpoints:");
+  sol2fragme.slice(0, 3).forEach((bp) => {
+    if (bp.isAccessible) {
+      console.log(`   Tick ${bp.tick}:`);
+      console.log(
+        `     Swap needed: ${addDecimalPoint(
+          bp.swapAmountToReach,
+          decimals0
+        )} SOL`
+      );
+      console.log(
+        `     Expected output: ${addDecimalPoint(
+          bp.expectedOutput,
+          decimals1
+        )} FRAGME`
+      );
+      console.log(
+        `     Liquidity change: ${
+          bp.liquidityChange.isNeg() ? "-" : "+"
+        }${bp.liquidityChange.abs().toString()}`
+      );
+    }
+  });
+
+  console.log("\n📊 FRAGME → SOL Key Breakpoints:");
+  fragme2sol.slice(0, 3).forEach((bp) => {
+    if (bp.isAccessible) {
+      console.log(`   Tick ${bp.tick}:`);
+      console.log(
+        `     Swap needed: ${addDecimalPoint(
+          bp.swapAmountToReach,
+          decimals1
+        )} FRAGME`
+      );
+      console.log(
+        `     Expected output: ${addDecimalPoint(
+          bp.expectedOutput,
+          decimals0
+        )} SOL`
+      );
+      console.log(
+        `     Liquidity change: ${
+          bp.liquidityChange.isNeg() ? "-" : "+"
+        }${bp.liquidityChange.abs().toString()}`
+      );
+    }
+  });
+
+  // Find where liquidity runs out
+  const liquidityRunsOutSOL = sol2fragme.find((bp) =>
+    bp.liquidityAfter.isZero()
+  );
+  const liquidityRunsOutFRAGME = fragme2sol.find((bp) =>
+    bp.liquidityAfter.isZero()
+  );
+
+  if (liquidityRunsOutSOL) {
+    console.log(
+      `\n⚠️ SOL → FRAGME: Liquidity depletes at tick ${liquidityRunsOutSOL.tick}`
+    );
+    console.log(
+      `   Max swap: ${addDecimalPoint(
+        liquidityRunsOutSOL.swapAmountToReach,
+        decimals0
+      )} SOL`
+    );
+  }
+
+  if (liquidityRunsOutFRAGME) {
+    console.log(
+      `\n⚠️ FRAGME → SOL: Liquidity depletes at tick ${liquidityRunsOutFRAGME.tick}`
+    );
+    console.log(
+      `   Max swap: ${addDecimalPoint(
+        liquidityRunsOutFRAGME.swapAmountToReach,
+        decimals1
+      )} FRAGME`
+    );
+  }
+}
 
 /**
  * Main analysis function
@@ -64,7 +171,7 @@ async function analyzePool() {
         {
           batchSize: CONFIG.positionBatchSize,
           maxPositions: CONFIG.maxPositions,
-          fetchOwners: CONFIG.fetchPositionOwners // Pass the new option
+          fetchOwners: CONFIG.fetchPositionOwners
         }
       );
 
@@ -78,51 +185,41 @@ async function analyzePool() {
           poolInfo.poolState.mintDecimals1
         );
 
-        // Step 5: Simulate swaps with slippage analysis
-        console.log("\n💱 Analyzing Swap Slippage...");
+        // Step 5: Display liquidity breakpoint analysis
+        displayLiquidityBreakpointSummary(poolInfo, positions);
 
-        // Test specific swap sizes
-        const testSizes = [
-          new BN(1 * 1e9), // 1 SOL
-          new BN(10 * 1e9), // 10 SOL
-          new BN(100 * 1e9) // 100 SOL
-        ];
+        // Test exact swap simulation (optional)
+        if (false) {
+          // Set to true to test
+          console.log("\n🧪 Testing exact swap simulation:");
 
-        console.log("\n📊 SOL → FRAGME Swaps:");
-        testSizes.forEach((size) => {
-          const result = simulateSwapExactAmount(
+          // Test FRAGME → SOL swap (298,171.51 FRAGME)
+          const testAmountFRAGME = new BN("298171510000000"); // 298,171.51 FRAGME (with 9 decimals)
+          const result = simulateExactSwap(
             poolInfo,
             positions,
-            size,
-            "token0ToToken1"
-          );
-          displaySwapSimulation(
-            result,
-            poolInfo.poolState.mintDecimals0,
-            poolInfo.poolState.mintDecimals1
-          );
-        });
-
-        console.log("\n📊 FRAGME → SOL Swaps:");
-        const fragmeTestSizes = [
-          new BN(4000 * 1e9), // ~1 SOL worth
-          new BN(40000 * 1e9), // ~10 SOL worth
-          new BN(400000 * 1e9) // ~100 SOL worth
-        ];
-
-        fragmeTestSizes.forEach((size) => {
-          const result = simulateSwapExactAmount(
-            poolInfo,
-            positions,
-            size,
+            testAmountFRAGME,
             "token1ToToken0"
           );
-          displaySwapSimulation(
-            result,
-            poolInfo.poolState.mintDecimals0,
-            poolInfo.poolState.mintDecimals1
+
+          console.log(`\n📊 Swap Result:`);
+          console.log(
+            `  Input: ${addDecimalPoint(
+              testAmountFRAGME,
+              poolInfo.poolState.mintDecimals1
+            )} FRAGME`
           );
-        });
+          console.log(
+            `  Output: ${addDecimalPoint(
+              result.amountOut,
+              poolInfo.poolState.mintDecimals0
+            )} SOL`
+          );
+          console.log(`  Price Impact: ${result.priceImpact.toFixed(2)}%`);
+          console.log(
+            `  Execution Price: ${result.executionPrice.toFixed(2)} FRAGME/SOL`
+          );
+        }
       } else if (positions.length === 0) {
         console.log("\n⚠️ No positions found for this pool");
       }
