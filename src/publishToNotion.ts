@@ -1,5 +1,6 @@
 import { Client } from "@notionhq/client";
 import { CreatePageParameters } from "@notionhq/client/build/src/api-endpoints";
+import { PriceChangeAnalysis } from "./fetchPreviousData";
 
 interface NotionConfig {
   apiKey: string;
@@ -14,6 +15,12 @@ interface ReportMetadata {
   currentPrice: string;
   totalPositions: number;
   activePositions: number;
+  // 새로운 필드들 추가
+  priceChangePercent?: number;
+  priceChangeValue?: number;
+  priceTrend?: string;
+  previousPrice?: number;
+  priceAlerts?: string[];
 }
 
 /**
@@ -26,9 +33,7 @@ function initializeNotionClient(apiKey: string): Client {
 }
 
 /**
- * Convert markdown to Notion blocks
- * Note: This is a simplified version. For full markdown support,
- * consider using a library like @tryfabric/martian
+ * Convert markdown to Notion blocks (동일한 구현 유지)
  */
 function markdownToNotionBlocks(markdown: string): any[] {
   const lines = markdown.split("\n");
@@ -44,7 +49,6 @@ function markdownToNotionBlocks(markdown: string): any[] {
     // Handle code blocks
     if (line.startsWith("```")) {
       if (inCodeBlock) {
-        // End code block
         blocks.push({
           object: "block",
           type: "code",
@@ -63,7 +67,6 @@ function markdownToNotionBlocks(markdown: string): any[] {
         codeBlockContent = [];
         inCodeBlock = false;
       } else {
-        // Start code block
         inCodeBlock = true;
       }
       continue;
@@ -82,13 +85,11 @@ function markdownToNotionBlocks(markdown: string): any[] {
       }
       currentTable.push(line);
 
-      // Check if next line is not a table row
       if (
         i === lines.length - 1 ||
         !lines[i + 1].includes("|") ||
         !lines[i + 1].trim().startsWith("|")
       ) {
-        // End of table, convert to Notion table
         blocks.push(createNotionTable(currentTable));
         currentTable = [];
         inTable = false;
@@ -141,17 +142,13 @@ function markdownToNotionBlocks(markdown: string): any[] {
           }
         });
       }
-    }
-    // Handle horizontal rules
-    else if (line.trim() === "---") {
+    } else if (line.trim() === "---") {
       blocks.push({
         object: "block",
         type: "divider",
         divider: {}
       });
-    }
-    // Handle bullet points
-    else if (line.trim().startsWith("- ")) {
+    } else if (line.trim().startsWith("- ")) {
       blocks.push({
         object: "block",
         type: "bulleted_list_item",
@@ -164,9 +161,7 @@ function markdownToNotionBlocks(markdown: string): any[] {
           ]
         }
       });
-    }
-    // Handle numbered lists
-    else if (/^\d+\.\s/.test(line.trim())) {
+    } else if (/^\d+\.\s/.test(line.trim())) {
       blocks.push({
         object: "block",
         type: "numbered_list_item",
@@ -179,14 +174,9 @@ function markdownToNotionBlocks(markdown: string): any[] {
           ]
         }
       });
-    }
-    // Handle empty lines
-    else if (line.trim() === "") {
-      // Skip empty lines
+    } else if (line.trim() === "") {
       continue;
-    }
-    // Handle regular paragraphs
-    else {
+    } else {
       blocks.push({
         object: "block",
         type: "paragraph",
@@ -201,20 +191,14 @@ function markdownToNotionBlocks(markdown: string): any[] {
 }
 
 /**
- * Parse inline markdown (bold, italic, code, links)
+ * Parse inline markdown
  */
 function parseInlineMarkdown(text: string): any[] {
   const richText: any[] = [];
-
-  // Simple implementation - for production use a proper markdown parser
-  // This handles basic cases
-
-  // Split by backticks for inline code
   const parts = text.split("`");
 
   for (let i = 0; i < parts.length; i++) {
     if (i % 2 === 0) {
-      // Regular text - check for bold and italic
       if (parts[i]) {
         richText.push({
           type: "text",
@@ -223,7 +207,6 @@ function parseInlineMarkdown(text: string): any[] {
         });
       }
     } else {
-      // Code
       if (parts[i]) {
         richText.push({
           type: "text",
@@ -236,7 +219,6 @@ function parseInlineMarkdown(text: string): any[] {
     }
   }
 
-  // If no rich text was added, add the original text
   if (richText.length === 0 && text) {
     richText.push({
       type: "text",
@@ -252,7 +234,6 @@ function parseInlineMarkdown(text: string): any[] {
  */
 function createNotionTable(tableLines: string[]): any {
   if (tableLines.length < 3) {
-    // Invalid table
     return {
       object: "block",
       type: "paragraph",
@@ -267,35 +248,30 @@ function createNotionTable(tableLines: string[]): any {
     };
   }
 
-  // Parse table - fixed parsing logic
   const headerLine = tableLines[0];
-  const dataLines = tableLines.slice(2); // Skip header and separator
+  const dataLines = tableLines.slice(2);
 
-  // Parse headers - remove leading and trailing pipes, then split
   const headers = headerLine
-    .replace(/^\|/, "") // Remove leading pipe
-    .replace(/\|$/, "") // Remove trailing pipe
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
     .split("|")
     .map((h) => h.trim());
 
-  // Parse data rows
   const rows: string[][] = [];
   dataLines.forEach((line) => {
     if (line.trim()) {
       const row = line
-        .replace(/^\|/, "") // Remove leading pipe
-        .replace(/\|$/, "") // Remove trailing pipe
+        .replace(/^\|/, "")
+        .replace(/\|$/, "")
         .split("|")
         .map((cell) => cell.trim());
 
-      // Only add if row has correct number of columns
       if (row.length === headers.length) {
         rows.push(row);
       }
     }
   });
 
-  // Create table block
   const tableBlock: any = {
     object: "block",
     type: "table",
@@ -307,7 +283,6 @@ function createNotionTable(tableLines: string[]): any {
     }
   };
 
-  // Add header row
   const headerRow: any = {
     object: "block",
     type: "table_row",
@@ -323,7 +298,6 @@ function createNotionTable(tableLines: string[]): any {
   };
   tableBlock.table.children.push(headerRow);
 
-  // Add data rows
   rows.forEach((row) => {
     const tableRow: any = {
       object: "block",
@@ -344,7 +318,7 @@ function createNotionTable(tableLines: string[]): any {
 }
 
 /**
- * Publish markdown report to Notion database
+ * Publish markdown report to Notion database with price change tracking
  */
 export async function publishReportToNotion(
   markdown: string,
@@ -360,63 +334,104 @@ export async function publishReportToNotion(
     // Convert markdown to Notion blocks
     const blocks = markdownToNotionBlocks(markdown);
 
+    // Prepare properties with new price change fields
+    const properties: any = {
+      Title: {
+        title: [
+          {
+            text: {
+              content: metadata.title
+            }
+          }
+        ]
+      },
+      "Pool Address": {
+        rich_text: [
+          {
+            text: {
+              content: metadata.poolAddress
+            }
+          }
+        ]
+      },
+      TVL: {
+        rich_text: [
+          {
+            text: {
+              content: metadata.tvl
+            }
+          }
+        ]
+      },
+      "Current Price": {
+        rich_text: [
+          {
+            text: {
+              content: metadata.currentPrice
+            }
+          }
+        ]
+      },
+      "Total Positions": {
+        number: metadata.totalPositions
+      },
+      "Active Positions": {
+        number: metadata.activePositions
+      },
+      Date: {
+        date: {
+          start: metadata.timestamp.toISOString()
+        }
+      }
+    };
+
+    // Add price change properties if available
+    if (metadata.priceChangePercent !== undefined) {
+      properties["Price Change %"] = {
+        number: metadata.priceChangePercent
+      };
+    }
+
+    if (metadata.previousPrice !== undefined) {
+      properties["Previous Price"] = {
+        rich_text: [
+          {
+            text: {
+              content: metadata.previousPrice.toFixed(6)
+            }
+          }
+        ]
+      };
+    }
+
+    if (metadata.priceTrend) {
+      properties["Price Trend"] = {
+        select: {
+          name: metadata.priceTrend
+        }
+      };
+    }
+
+    if (metadata.priceAlerts && metadata.priceAlerts.length > 0) {
+      properties["Alerts"] = {
+        rich_text: [
+          {
+            text: {
+              content: metadata.priceAlerts.join(" | ")
+            }
+          }
+        ]
+      };
+    }
+
     // Create page in database
     const response = await notion.pages.create({
       parent: {
         type: "database_id",
         database_id: config.databaseId
       },
-      properties: {
-        // Adjust these property names to match your database schema
-        Title: {
-          title: [
-            {
-              text: {
-                content: metadata.title
-              }
-            }
-          ]
-        },
-        "Pool Address": {
-          rich_text: [
-            {
-              text: {
-                content: metadata.poolAddress
-              }
-            }
-          ]
-        },
-        TVL: {
-          rich_text: [
-            {
-              text: {
-                content: metadata.tvl
-              }
-            }
-          ]
-        },
-        "Current Price": {
-          rich_text: [
-            {
-              text: {
-                content: metadata.currentPrice
-              }
-            }
-          ]
-        },
-        "Total Positions": {
-          number: metadata.totalPositions
-        },
-        "Active Positions": {
-          number: metadata.activePositions
-        },
-        Date: {
-          date: {
-            start: metadata.timestamp.toISOString()
-          }
-        }
-      },
-      children: blocks.slice(0, 100) // Notion has a limit of 100 blocks per request
+      properties,
+      children: blocks.slice(0, 100)
     } as CreatePageParameters);
 
     // If there are more than 100 blocks, append them in batches
@@ -462,17 +477,18 @@ export function loadNotionConfig(): NotionConfig | null {
 
   return {
     apiKey,
-    databaseId: databaseId.replace(/-/g, "") // Remove dashes if present
+    databaseId: databaseId.replace(/-/g, "")
   };
 }
 
 /**
- * Create metadata from pool analysis
+ * Create metadata from pool analysis with price change data
  */
 export function createReportMetadata(
   poolInfo: any,
   positions: any[],
-  timestamp: Date
+  timestamp: Date,
+  priceAnalysis?: PriceChangeAnalysis
 ): ReportMetadata {
   const activePositions = positions.filter(
     (p) =>
@@ -480,7 +496,7 @@ export function createReportMetadata(
       poolInfo.currentTick < p.tickUpperIndex
   );
 
-  return {
+  const metadata: ReportMetadata = {
     title: `Pool Analysis Report - ${timestamp.toLocaleDateString()}`,
     timestamp,
     poolAddress: poolInfo.poolAddress,
@@ -489,4 +505,34 @@ export function createReportMetadata(
     totalPositions: positions.length,
     activePositions: activePositions.length
   };
+
+  // Add price change data if available
+  if (priceAnalysis) {
+    metadata.priceChangePercent = priceAnalysis.priceChangePercent;
+    metadata.priceChangeValue = priceAnalysis.priceChange;
+    metadata.priceTrend = priceAnalysis.trend;
+    metadata.previousPrice = priceAnalysis.previousPrice;
+
+    // Generate alerts
+    const alerts: string[] = [];
+    const absPercent = Math.abs(priceAnalysis.priceChangePercent);
+
+    if (absPercent > 50) {
+      alerts.push(
+        `⚠️ EXTREME: ${priceAnalysis.priceChangePercent.toFixed(2)}%`
+      );
+    } else if (absPercent > 30) {
+      alerts.push(`🔔 HIGH: ${priceAnalysis.priceChangePercent.toFixed(2)}%`);
+    } else if (absPercent > 20) {
+      alerts.push(
+        `📢 NOTABLE: ${priceAnalysis.priceChangePercent.toFixed(2)}%`
+      );
+    }
+
+    if (alerts.length > 0) {
+      metadata.priceAlerts = alerts;
+    }
+  }
+
+  return metadata;
 }

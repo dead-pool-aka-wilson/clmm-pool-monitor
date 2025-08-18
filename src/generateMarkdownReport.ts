@@ -18,6 +18,16 @@ import {
   TokenPricesUSD
 } from "./fetchPrices";
 import { generateSwapCapacitySection } from "./swapSimulator";
+import {
+  fetchLatestPriceFromNotion,
+  fetchRecentPriceHistory,
+  analyzePriceChange,
+  calculateMovingAverages,
+  generatePriceAlerts,
+  generatePriceTrendSummary,
+  PriceChangeAnalysis,
+  PreviousPriceData
+} from "./fetchPreviousData";
 
 // Target owner to track specially
 const TARGET_OWNER = "Bht3rxNxJ3Ym8JBJfVSfm1Zb6FnJutm1PS17o84yEGm6";
@@ -27,6 +37,8 @@ export interface ReportData {
   positions: PersonalPosition[];
   timestamp: Date;
   priceData?: TokenPricesUSD;
+  priceAnalysis?: PriceChangeAnalysis;
+  priceHistory?: PreviousPriceData[];
 }
 
 /**
@@ -35,9 +47,60 @@ export interface ReportData {
 export async function generateMarkdownReport(
   data: ReportData,
   outputPath?: string,
-  publishToNotion: boolean = false
+  publishToNotionFlag: boolean = false
 ): Promise<string> {
   const { pool, positions, timestamp } = data;
+
+  // Fetch price change data from Notion if configured
+  let priceAnalysis: PriceChangeAnalysis | null = null;
+  let priceHistory: PreviousPriceData[] = [];
+  const notionConfig = loadNotionConfig();
+
+  if (notionConfig && publishToNotionFlag) {
+    try {
+      console.log("\n📊 Fetching previous price data from Notion...");
+
+      // Get the latest price data
+      const previousData = await fetchLatestPriceFromNotion(
+        notionConfig.apiKey,
+        notionConfig.databaseId
+      );
+
+      if (previousData) {
+        // Parse current price to number
+        const currentPriceNum =
+          typeof pool.currentPrice === "string"
+            ? parseFloat(pool.currentPrice)
+            : pool.currentPrice;
+
+        // Analyze price change
+        priceAnalysis = analyzePriceChange(previousData, currentPriceNum);
+        console.log(
+          `   Previous Price: ${previousData.price.toFixed(6)} FRAGME/SOL`
+        );
+        console.log(
+          `   Current Price: ${currentPriceNum.toFixed(6)} FRAGME/SOL`
+        );
+        console.log(
+          `   Change: ${priceAnalysis.priceChangePercent.toFixed(2)}% ${
+            priceAnalysis.trendEmoji
+          }`
+        );
+
+        // Get recent price history for trend analysis
+        priceHistory = await fetchRecentPriceHistory(
+          notionConfig.apiKey,
+          notionConfig.databaseId,
+          20
+        );
+        console.log(`   Historical data points: ${priceHistory.length}`);
+      } else {
+        console.log("   No previous data found - this will be the first entry");
+      }
+    } catch (error) {
+      console.log("⚠️ Could not fetch previous price data:", error);
+    }
+  }
 
   // Fetch SOL price and calculate USD prices
   let priceData: TokenPricesUSD | null = null;
@@ -57,13 +120,39 @@ export async function generateMarkdownReport(
 
   // Update data with price info
   data.priceData = priceData || undefined;
+  data.priceAnalysis = priceAnalysis || undefined;
+  data.priceHistory = priceHistory;
 
   let report = "";
 
   // Header
   report += "# Byreal CLMM Pool Analysis Report\n\n";
   report += `Generated: ${timestamp.toISOString()}\n\n`;
+
+  // Add price alerts at the top if significant changes detected
+  if (priceAnalysis) {
+    const alerts = generatePriceAlerts(priceAnalysis);
+    if (alerts.length > 0) {
+      report += "## ⚠️ Price Alerts\n\n";
+      alerts.forEach((alert) => {
+        report += `- ${alert}\n`;
+      });
+      report += "\n";
+    }
+  }
+
   report += "---\n\n";
+
+  // Add Price Trend Analysis Section (right after alerts)
+  if (priceAnalysis && priceHistory.length > 0) {
+    const movingAverages = calculateMovingAverages(priceHistory);
+    report += generatePriceTrendSummary(
+      priceAnalysis,
+      priceHistory,
+      movingAverages
+    );
+    report += "\n---\n\n";
+  }
 
   // Important Note about price convention
   report += "## Price Convention\n\n";
@@ -81,9 +170,9 @@ export async function generateMarkdownReport(
   }
   report += "---\n\n";
 
-  // Pool Overview Section
+  // Pool Overview Section (modified to include price change)
   report += "## Pool Overview\n\n";
-  report += generatePoolOverviewSection(pool);
+  report += generatePoolOverviewSectionWithPriceChange(pool, priceAnalysis);
 
   // Market Metrics Section (now includes USD prices)
   report += "## Market Metrics\n\n";
@@ -93,7 +182,7 @@ export async function generateMarkdownReport(
   report += "## Position Statistics\n\n";
   report += generatePositionStatisticsSection(positions, pool);
 
-  // Swap Capacity Analysis Section (NEW)
+  // Swap Capacity Analysis Section
   report += generateSwapCapacitySection(pool, positions);
 
   // Ownership Analysis Section
@@ -126,11 +215,15 @@ export async function generateMarkdownReport(
   }
 
   // Publish to Notion if enabled
-  if (publishToNotion) {
-    const notionConfig = loadNotionConfig();
+  if (publishToNotionFlag) {
     if (notionConfig) {
       try {
-        const metadata = createReportMetadata(pool, positions, timestamp);
+        const metadata = createReportMetadata(
+          pool,
+          positions,
+          timestamp,
+          priceAnalysis || undefined
+        );
         const pageUrl = await publishReportToNotion(
           report,
           metadata,
@@ -149,7 +242,53 @@ export async function generateMarkdownReport(
 }
 
 /**
- * Generate pool overview section
+ * Generate pool overview section with price change
+ */
+function generatePoolOverviewSectionWithPriceChange(
+  pool: PoolInfo,
+  priceAnalysis?: PriceChangeAnalysis | null
+): string {
+  let section = "";
+
+  section += "| Metric | Value |\n";
+  section += "|--------|-------|\n";
+  section += `| Pool Address | ${pool.poolAddress} |\n`;
+  section += `| Token 0 (SOL) | ${pool.token0.mint} |\n`;
+  section += `| Token 1 (FRAGME) | ${pool.token1.mint} |\n`;
+  section += `| Current Price | ${formatPrice(
+    pool.currentPrice
+  )} FRAGME/SOL |\n`;
+
+  // Add price change information if available
+  if (priceAnalysis) {
+    const sign = priceAnalysis.isIncrease ? "+" : "";
+    const changeStr = `${sign}${priceAnalysis.priceChangePercent.toFixed(2)}% ${
+      priceAnalysis.trendEmoji
+    }`;
+    section += `| Previous Price | ${priceAnalysis.previousPrice.toFixed(
+      6
+    )} FRAGME/SOL |\n`;
+    section += `| Price Change | ${changeStr} |\n`;
+    section += `| Price Trend | ${priceAnalysis.trend.toUpperCase()} |\n`;
+    section += `| Time Since Last Update | ${priceAnalysis.timeDiff.toFixed(
+      1
+    )} hours |\n`;
+  }
+
+  section += `| Current Tick | ${pool.currentTick} |\n`;
+  section += `| Tick Spacing | ${pool.poolState.tickSpacing} |\n`;
+  section += `| Status | ${
+    pool.poolState.status === 0 ? "Active" : "Paused"
+  } |\n`;
+  section += `| TVL | ${formatPrice(pool.tvl)} |\n`;
+  section += `| Total Liquidity | ${pool.totalLiquidity} |\n`;
+  section += "\n";
+
+  return section;
+}
+
+/**
+ * Generate pool overview section (original - without price change)
  */
 function generatePoolOverviewSection(pool: PoolInfo): string {
   let section = "";
