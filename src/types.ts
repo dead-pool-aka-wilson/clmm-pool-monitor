@@ -1,5 +1,6 @@
 import { PublicKey } from "@solana/web3.js";
 import BN from "bn.js";
+import { PersonalPosition } from "./fetchPositions";
 
 export interface PoolState {
   bump: number[];
@@ -67,5 +68,6 @@ export interface LiquidityInfo {
     decimals: number;
     amount: BN;
   };
-  personalPositions: any[];
+  personalPositions: any[]; // For wallet-specific positions
+  allPoolPositions?: PersonalPosition[]; // All positions in the pool
 }
